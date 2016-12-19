@@ -50,7 +50,8 @@ static struct backlight_device *portabook_backlight_device;
 static int
 portabook_backlight_update_status(struct backlight_device *dev)
 {
-    if (dev->props.power == FB_BLANK_POWERDOWN) {
+    if (dev->props.power == FB_BLANK_POWERDOWN ||
+	(dev->props.state & (BL_CORE_SUSPENDED | BL_CORE_FBBLANK))) {
 	portabook_disable_backlight();
     }
     else {
@@ -63,20 +64,12 @@ portabook_backlight_update_status(struct backlight_device *dev)
 static int
 portabook_backlight_get_brightness(struct backlight_device *dev)
 {
-    dev->props.brightness = portabook_get_backlight();
-    return 1;
-}
-
-static int
-portabook_backlight_check_fb(struct backlight_device *dev, struct fb_info *fb)
-{
-    return 1;
+    return portabook_get_backlight();
 }
 
 static struct backlight_ops portabook_backlight_ops = {
     .update_status = portabook_backlight_update_status,
     .get_brightness = portabook_backlight_get_brightness,
-    .check_fb = portabook_backlight_check_fb,
 };
 
 static int
@@ -90,7 +83,7 @@ portabook_backlight_device_register(struct device *parent)
     props.power = FB_BLANK_UNBLANK;
 
     portabook_backlight_device =
-	backlight_device_register("portabook",
+	backlight_device_register("portabook_bl",
 				  parent, NULL,
 				  &portabook_backlight_ops,
 				  &props);
