@@ -52,6 +52,7 @@ portabook_backlight_update_status(struct backlight_device *dev)
 {
     if (dev->props.power == FB_BLANK_POWERDOWN ||
 	(dev->props.state & (BL_CORE_SUSPENDED | BL_CORE_FBBLANK))) {
+	portabook_set_backlight(0);
 	portabook_disable_backlight();
     }
     else {
