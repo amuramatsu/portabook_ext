@@ -4,7 +4,7 @@ This kernel module supports:
 
   * Backlight controll
   * Battery information
-  * Pseudo AC information
+  * AC adapter information
 
 at KINGJIM Portabook XMC10.
 
@@ -22,7 +22,7 @@ possibility that this module burn your Portabook.
 
   * バックライトコントロール
   * 電池残量の取得
-  * （擬似的な）AC接続の有無の取得
+  * AC接続の有無の取得
 
 を出来るようにします。
 

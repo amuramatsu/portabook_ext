@@ -105,6 +105,7 @@
 #define	BATT_INFO_REMAIN_CAP_L		0x1A5
 #define	BATT_INFO_PRESENT_VOLT_H	0x1A6
 #define	BATT_INFO_PRESENT_VOLT_L	0x1A7
+#define BATT_INFO_AC_ADAPTER		0x10B
 
 struct portabook_battery {
     struct i2c_client *i2c_client;
@@ -124,6 +125,7 @@ struct portabook_battery {
     int voltage_now;
     int full_charge_capacity;
     int state;
+    int ac_adapter;
 };
 
 static unsigned int battery_info_cache_time = 1000;
@@ -190,6 +192,10 @@ portabook_battery_read_status(struct portabook_battery *di)
     if (s < 0) goto error;
     di->voltage_now = (buf[0] << 8) | buf[1];
 
+    s = read_battinfo_reg(i2c_client, BATT_INFO_AC_ADAPTER, &buf[0]);
+    if (s < 0) goto error;
+    di->ac_adapter = buf[0];
+    
     di->update_time = jiffies;
     
  success:
@@ -322,17 +328,6 @@ static enum power_supply_property portabook_battery_props[] = {
     POWER_SUPPLY_PROP_CAPACITY_LEVEL,
 };
 
-static int
-portabook_ac_is_connected(struct portabook_battery *battery)
-{
-    if (battery->state & ACPI_BATTERY_STATE_CHARGING)
-	return 1;
-    if (battery->state & ACPI_BATTERY_STATE_DISCHARGING &&
-	battery->rate_now >= SMALL_DISCHARGE_RATE)
-	return 0;
-    return 1;
-}
-
 static struct portabook_battery *__portabook_battery_di;
 static int
 portabook_get_ac_property(struct power_supply *psy,
@@ -347,7 +342,7 @@ portabook_get_ac_property(struct power_supply *psy,
     
     switch (psp) {
     case POWER_SUPPLY_PROP_ONLINE:
-	val->intval = portabook_ac_is_connected(battery);
+	val->intval = battery->ac_adapter & 0x01;
 	break;
     default:
 	return -EINVAL;
