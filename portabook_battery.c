@@ -241,7 +241,8 @@ portabook_battery_get_property(struct power_supply *psy,
     
     switch (psp) {
     case POWER_SUPPLY_PROP_STATUS:
-	if (battery->state & ACPI_BATTERY_STATE_DISCHARGING)
+	if (battery->state & ACPI_BATTERY_STATE_DISCHARGING &&
+	    battery->rate_now >= SMALL_DISCHARGE_RATE)
 	    val->intval = POWER_SUPPLY_STATUS_DISCHARGING;
 	else if (battery->state & ACPI_BATTERY_STATE_CHARGING)
 	    val->intval = POWER_SUPPLY_STATUS_CHARGING;
