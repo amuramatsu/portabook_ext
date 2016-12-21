@@ -4,7 +4,7 @@ BUILD_DIR := $(shell pwd)
 VERBOSE   := 0
 MODULE_NAME = portabook_ext
 
-$(MODULE_NAME)-y := portabook_battery.o
+$(MODULE_NAME)-y := portabook_init.o portabook_backlight.o portabook_battery.o
 obj-m      := portabook_ext.o
 
 all:

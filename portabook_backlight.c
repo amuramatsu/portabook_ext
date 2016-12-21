@@ -3,10 +3,6 @@
 #include <linux/module.h>
 #include <linux/kernel.h>
 
-MODULE_DESCRIPTION("Portabook extra Module");
-MODULE_AUTHOR("MURAMATSU Atsushi <amura@tomato.sakura.ne.jp>");
-MODULE_LICENSE("GPL");
-
 #ifndef FB_BLANK_UNBLANK
 #define FB_BLANK_UNBLANK 3
 #endif
@@ -147,12 +143,10 @@ intel_soc_pmic_writeb(int reg, u8 val)
     i2c_master_send(intel_soc_pmic_i2c, buf, 2);
 }
 
-static int
-portabook_ext_init_module(void)
+int
+portabook_backlight_init(void)
 {
     int error = 0;
-
-    printk("portabook_ext is loaded!\n");
     error = intel_soc_pmic_rw_init();
     if (error)
 	return -ENODEV;
@@ -163,11 +157,8 @@ portabook_ext_init_module(void)
     return 0;
 }
 
-static void portabook_ext_cleanup_module(void)
+void
+portabook_backlight_cleanup(void)
 {
     portabook_backlight_device_unregister();
-    printk("portabook_ext is unloaded!\n");
 }
-
-module_init(portabook_ext_init_module);
-module_exit(portabook_ext_cleanup_module);

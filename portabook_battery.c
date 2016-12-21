@@ -52,12 +52,13 @@
 #include <linux/module.h>
 #include <linux/param.h>
 #include <linux/jiffies.h>
-#include <linux/workqueue.h>
+#include <linux/delay.h>
 #include <linux/i2c.h>
-#include <linux/pm.h>
 #include <linux/slab.h>
 #include <linux/platform_device.h>
 #include <linux/power_supply.h>
+
+#define I2C_DEVICE_NAME	"portabook_batt"
 
 #ifndef ACPI_BATTERY_STATE_CHARGING
 #define ACPI_BATTERY_STATE_CHARGING	0x00000001
@@ -77,8 +78,8 @@
 #define DESIGN_WARN_CAPACITY		800	/* 800 mAh */
 #define SMALL_DISCHARGE_RATE		200	/* 200mA is minumum? */
 
-#define BATT_INDEX_REG			0x82
-#define BATT_DATA_REG			0x80
+#define BATT_INDEX_CMD			0x82
+#define BATT_DATA_CMD			0x80
 
 #define	BATT_INFO_LAST_CAP_H		0x144
 #define	BATT_INFO_LAST_CAP_L		0x145
@@ -92,10 +93,13 @@
 #define	BATT_INFO_PRESENT_VOLT_L	0x1A7
 
 struct portabook_battery {
-    struct device *dev;
+    struct i2c_client *i2c_client;
+    struct mutex lock;
+    
     struct power_supply *bat;
     struct power_supply_desc bat_desc;
-    struct i2c_client *i2c_dev;
+    struct power_supply *ac;
+    struct power_supply_desc ac_desc;
     
     /* portabook battery data,
        valid after calling portabook_batt_battery_read_status() */
@@ -106,15 +110,6 @@ struct portabook_battery {
     int voltage_now;
     int full_charge_capacity;
     int state;
-    
-    struct workqueue_struct *monitor_wqueue;
-    struct delayed_work monitor_work;
-};
-
-struct portabook_ac {
-    struct power_supply *ac;
-    struct power_supply_desc ac_desc;
-    struct portabook_battery *battery;
 };
 
 static unsigned int cache_time = 1000;
@@ -124,89 +119,73 @@ MODULE_PARM_DESC(cache_time, "cache time in milliseconds");
 static int portabook_ac_init(struct portabook_battery *battery);
 
 static int
-read_battinfo_reg(struct i2c_client *i2c_dev, int reg, u8 *value)
+read_battinfo_reg(struct i2c_client *i2c_client, int reg, u8 *value)
 {
-    int s;
-    char buf[3];
-
-    /* set info reg */
-    buf[0] = BATT_INDEX_REG;
-    buf[1] = reg >> 8;
-    buf[2] = reg & 0xff;
-    s = i2c_master_send(i2c_dev, buf, 3);
+    u8 buf[2];
+    s32 s;
+    buf[0] = reg >> 8;
+    buf[1] = reg & 0xff;
+    s = i2c_smbus_write_i2c_block_data(i2c_client, BATT_INDEX_CMD,
+				       sizeof(buf), buf);
     if (s < 0) return s;
-    
-    /* set to read reg */
-    buf[0] = BATT_DATA_REG;
-    s = i2c_master_send(i2c_dev, buf, 1);
+    s = i2c_smbus_read_byte_data(i2c_client, BATT_DATA_CMD);
     if (s < 0) return s;
-    
-    /* read data */
-    s = i2c_master_recv(i2c_dev, value, 1);
-    if (s < 0) return s;
+    *value = s;
     return 0;
 }
 
 static int
 portabook_battery_read_status(struct portabook_battery *di)
 {
+    struct i2c_client *i2c_client = di->i2c_client;
     u8 buf[2];
     int s;
+
+    mutex_lock(&di->lock);
+    if (di->update_time &&
+	time_before(jiffies, di->update_time + msecs_to_jiffies(cache_time)))
+	goto success;
+
+    s = read_battinfo_reg(i2c_client, BATT_INFO_LAST_CAP_H, &buf[0]);
+    if (s < 0) goto error;
+    s = read_battinfo_reg(i2c_client, BATT_INFO_LAST_CAP_L, &buf[1]);
+    if (s < 0) goto error;
+    di->full_charge_capacity = (buf[0] << 8) | buf[1];
+
+    s = read_battinfo_reg(i2c_client, BATT_INFO_STATUS_H, &buf[0]);
+    if (s < 0) goto error;
+    s = read_battinfo_reg(i2c_client, BATT_INFO_STATUS_L, &buf[1]);
+    if (s < 0) goto error;
+    di->state = (buf[0] << 8) | buf[1];
+
+    s = read_battinfo_reg(i2c_client, BATT_INFO_PRESENT_RATE_H, &buf[0]);
+    if (s < 0) goto error;
+    s = read_battinfo_reg(i2c_client, BATT_INFO_PRESENT_RATE_L, &buf[1]);
+    if (s < 0) goto error;
+    di->rate_now = (buf[0] << 8) | buf[1];
+
+    s = read_battinfo_reg(i2c_client, BATT_INFO_REMAIN_CAP_H, &buf[0]);
+    if (s < 0) goto error;
+    s = read_battinfo_reg(i2c_client, BATT_INFO_REMAIN_CAP_L, &buf[1]);
+    if (s < 0) goto error;
+    di->capacity_now = (buf[0] << 8) | buf[1];
     
-    if (di->update_time && time_before(jiffies, di->update_time +
-				       msecs_to_jiffies(cache_time)))
-	return 0;
-
-    s = read_battinfo_reg(di->i2c_dev, BATT_INFO_LAST_CAP_H, &buf[0]);
+    s = read_battinfo_reg(i2c_client, BATT_INFO_PRESENT_VOLT_H, &buf[0]);
     if (s < 0) goto error;
-    s = read_battinfo_reg(di->i2c_dev, BATT_INFO_LAST_CAP_L, &buf[1]);
+    s = read_battinfo_reg(i2c_client, BATT_INFO_PRESENT_VOLT_L, &buf[1]);
     if (s < 0) goto error;
-    di->full_charge_capacity = buf[0] << 8 | buf[1];
-
-    s = read_battinfo_reg(di->i2c_dev, BATT_INFO_STATUS_H, &buf[0]);
-    if (s < 0) goto error;
-    s = read_battinfo_reg(di->i2c_dev, BATT_INFO_STATUS_L, &buf[1]);
-    if (s < 0) goto error;
-    di->state = buf[0] << 8 | buf[1];
-
-    s = read_battinfo_reg(di->i2c_dev, BATT_INFO_PRESENT_RATE_H, &buf[0]);
-    if (s < 0) goto error;
-    s = read_battinfo_reg(di->i2c_dev, BATT_INFO_PRESENT_RATE_L, &buf[1]);
-    if (s < 0) goto error;
-    di->rate_now = buf[0] << 8 | buf[1];
-
-    s = read_battinfo_reg(di->i2c_dev, BATT_INFO_REMAIN_CAP_H, &buf[0]);
-    if (s < 0) goto error;
-    s = read_battinfo_reg(di->i2c_dev, BATT_INFO_REMAIN_CAP_L, &buf[1]);
-    if (s < 0) goto error;
-    di->capacity_now = buf[0] << 8 | buf[1];
-
-    s = read_battinfo_reg(di->i2c_dev, BATT_INFO_PRESENT_VOLT_H, &buf[0]);
-    if (s < 0) goto error;
-    s = read_battinfo_reg(di->i2c_dev, BATT_INFO_PRESENT_VOLT_L, &buf[1]);
-    if (s < 0) goto error;
-    di->voltage_now = buf[0] << 8 | buf[1];
+    di->voltage_now = (buf[0] << 8) | buf[1];
 
     di->update_time = jiffies;
+    
+ success:
+    mutex_unlock(&di->lock);
     return 0;
 	
  error:
-    dev_warn(di->dev, "call to read_battinfo_reg failed\n");
+    mutex_unlock(&di->lock);
+    dev_warn(&di->i2c_client->dev, "call to read_battinfo_reg failed\n");
     return 1;
-}
-
-static void
-portabook_battery_work(struct work_struct *work)
-{
-    struct portabook_battery *di =
-	container_of(work, struct portabook_battery,
-		     monitor_work.work);
-    const int interval = HZ * 60;
-
-    dev_dbg(di->dev, "%s\n", __func__);
-
-    portabook_battery_read_status(di);
-    queue_delayed_work(di->monitor_wqueue, &di->monitor_work, interval);
 }
 
 static int
@@ -262,6 +241,10 @@ portabook_battery_get_property(struct power_supply *psy,
 	val->intval = 1;
 	break;
 	
+    case POWER_SUPPLY_PROP_VOLTAGE_MIN_DESIGN:
+	val->intval = DESIGN_VOLTAGE * 1000;
+	break;
+	
     case POWER_SUPPLY_PROP_VOLTAGE_NOW:
 	val->intval = battery->voltage_now * 1000;
 	break;
@@ -314,34 +297,35 @@ portabook_battery_get_property(struct power_supply *psy,
 static enum power_supply_property portabook_battery_props[] = {
     POWER_SUPPLY_PROP_STATUS,
     POWER_SUPPLY_PROP_PRESENT,
+    POWER_SUPPLY_PROP_VOLTAGE_MIN_DESIGN,
     POWER_SUPPLY_PROP_VOLTAGE_NOW,
     POWER_SUPPLY_PROP_CURRENT_NOW,
     POWER_SUPPLY_PROP_CHARGE_FULL_DESIGN,
     POWER_SUPPLY_PROP_CHARGE_FULL,
-    POWER_SUPPLY_PROP_CHARGE_EMPTY,
     POWER_SUPPLY_PROP_CHARGE_NOW,
     POWER_SUPPLY_PROP_CAPACITY,
     POWER_SUPPLY_PROP_CAPACITY_LEVEL,
 };
 
 static int
-portabook_battery_probe(struct platform_device *pdev)
+portabook_battery_probe(struct i2c_client *i2c_client,
+			const struct i2c_device_id *id)
 {
     struct power_supply_config psy_cfg = {};
     int retval = 0;
     struct portabook_battery *di;
     
-    di = devm_kzalloc(&pdev->dev, sizeof(*di), GFP_KERNEL);
+    di = devm_kzalloc(&i2c_client->dev, sizeof(*di), GFP_KERNEL);
     if (!di) {
 	retval = -ENOMEM;
 	goto di_alloc_failed;
     }
     
-    platform_set_drvdata(pdev, di);
+    i2c_set_clientdata(i2c_client, di);
     
-    di->dev			= &pdev->dev;
-    di->i2c_dev			= pdev->dev.parent;
-    di->bat_desc.name		= dev_name(&pdev->dev);
+    mutex_init(&di->lock);
+    di->i2c_client		= i2c_client;
+    di->bat_desc.name		= "portabook_batt";
     di->bat_desc.type		= POWER_SUPPLY_TYPE_BATTERY;
     di->bat_desc.properties	= portabook_battery_props;
     di->bat_desc.num_properties	= ARRAY_SIZE(portabook_battery_props);
@@ -352,43 +336,33 @@ portabook_battery_probe(struct platform_device *pdev)
     /* enable sleep mode feature */
     portabook_battery_read_status(di);
     
-    di->bat = power_supply_register(&pdev->dev, &di->bat_desc, &psy_cfg);
+    di->bat = power_supply_register(&i2c_client->dev, &di->bat_desc, &psy_cfg);
     if (IS_ERR(di->bat)) {
-	dev_err(di->dev, "failed to register battery\n");
+	dev_err(&di->i2c_client->dev, "failed to register battery\n");
 	retval = PTR_ERR(di->bat);
 	goto batt_failed;
     }
 
-    INIT_DELAYED_WORK(&di->monitor_work, portabook_battery_work);
-    di->monitor_wqueue = create_singlethread_workqueue(dev_name(&pdev->dev));
-    if (!di->monitor_wqueue) {
-	retval = -ESRCH;
-	goto workqueue_failed;
-    }
-    queue_delayed_work(di->monitor_wqueue, &di->monitor_work, HZ * 1);
-
-    retval = portabook_ac_init(di->bat);
-    if (retval = 0)
-	goto success;
-    
-workqueue_failed:
-    power_supply_unregister(di->bat);
+#if 0
+    retval = portabook_ac_init(di);
+    if (!retval)
+	power_supply_unregister(di->bat);
+#endif
     
 batt_failed:
 di_alloc_failed:
-success:
     return retval;
 }
 
 static int
-portabook_battery_remove(struct platform_device *pdev)
+portabook_battery_remove(struct i2c_client *i2c_client)
 {
-    struct portabook_battery *di = platform_get_drvdata(pdev);
-    
-    cancel_delayed_work_sync(&di->monitor_work);
-    destroy_workqueue(di->monitor_wqueue);
+    struct portabook_battery *di = i2c_get_clientdata(i2c_client);
     power_supply_unregister(di->bat);
-    
+#if 0
+    power_supply_unregister(di->ac);
+#endif
+    mutex_destroy(&di->lock);
     return 0;
 }
 
@@ -408,15 +382,15 @@ portabook_get_ac_property(struct power_supply *psy,
 			  enum power_supply_property psp,
 			  union power_supply_propval *val)
 {
-    struct portabook_ac *ac = power_supply_get_drvdata(psy);
-    if (!ac)
+    struct portabook_battery *battery = power_supply_get_drvdata(psy);
+    if (!battery)
 	return -ENODEV;
 
-    portabook_battery_read_status(ac->battery);
+    portabook_battery_read_status(battery);
     
     switch (psp) {
     case POWER_SUPPLY_PROP_ONLINE:
-	val->intval = portabook_ac_is_connected(ac->battery);
+	val->intval = portabook_ac_is_connected(battery);
 	break;
     default:
 	return -EINVAL;
@@ -433,65 +407,71 @@ static int portabook_ac_init(struct portabook_battery *battery)
 {
     struct power_supply_config psy_cfg = {};
     int result = 0;
-    struct portabook_ac *ac = NULL;
-
-    ac = kzalloc(sizeof(struct portabook_ac), GFP_KERNEL);
-    if (!ac)
-	return -ENOMEM;
     
-    ac->battery = battery;
-    ac->ac_desc.name = battery->bat_desc.name;
-    ac->ac_desc.type = POWER_SUPPLY_TYPE_MAINS;
-    ac->ac_desc.properties = portabook_ac_props;
-    ac->ac_desc.num_properties = ARRAY_SIZE(portabook_ac_props);
-    ac->ac_desc.get_property = portabook_get_ac_property;
-    ac->ac = power_supply_register(&ac->battery->dev,
-				   &ac->ac_desc, &psy_cfg);
-    if (IS_ERR(ac->ac)) {
-	result = PTR_ERR(ac->ac);
-	goto end;
-    }
-end:
-    if (result) {
-	kfree(ac);
-    }
+    battery->ac_desc.name		= "portabook_ac";
+    battery->ac_desc.type		= POWER_SUPPLY_TYPE_MAINS;
+    battery->ac_desc.properties		= portabook_ac_props;
+    battery->ac_desc.num_properties	= ARRAY_SIZE(portabook_ac_props);
+    battery->ac_desc.get_property	= portabook_get_ac_property;
+    
+    psy_cfg.drv_data		= battery;
+    
+    battery->ac = power_supply_register(&battery->i2c_client->dev,
+					&battery->ac_desc, &psy_cfg);
+    if (IS_ERR(battery->ac))
+	result = PTR_ERR(battery->ac);
     return result;
 }
 
+static struct i2c_device_id portabook_battery_idtable[] = {
+    { I2C_DEVICE_NAME, -1 },
+    {},
+};
+MODULE_DEVICE_TABLE(i2c, portabook_battery_idtable);
 
-#ifdef CONFIG_PM
-
-static int
-portabook_battery_suspend(struct platform_device *pdev,
-			       pm_message_t state)
-{
-    return 0;
-}
-
-static int
-portabook_battery_resume(struct platform_device *pdev)
-{
-    struct portabook_battery *di = platform_get_drvdata(pdev);
-    //power_supply_changed(di->bat);
-    mod_delayed_work(di->monitor_wqueue, &di->monitor_work, HZ);
-    return 0;
-}
-
-#else
-
-#define portabook_battery_suspend NULL
-#define portabook_battery_resume NULL
-
-#endif /* CONFIG_PM */
-
-static struct platform_driver portabook_battery_driver = {
+static struct i2c_driver portabook_battery_driver = {
     .driver = {
-	.name = "portabook-battery",
+	.name  = I2C_DEVICE_NAME,
+	.owner = THIS_MODULE,
     },
+    .id_table = portabook_battery_idtable,
     .probe    = portabook_battery_probe,
     .remove   = portabook_battery_remove,
-    .suspend  = portabook_battery_suspend,
-    .resume   = portabook_battery_resume,
 };
 
-module_platform_driver(portabook_battery_driver);
+static struct i2c_board_info portabook_ext_info = {
+    .addr = 0x10,
+    .type = I2C_DEVICE_NAME,
+};
+
+static struct i2c_client *battery_i2c_client;
+
+int
+portabook_battery_init(void)
+{
+    int s;
+    struct i2c_adapter *adapter;
+    
+    s = i2c_add_driver(&portabook_battery_driver);
+    if (s < 0) return s;
+
+    adapter = i2c_get_adapter(0);
+    if (!adapter)
+	return -ENODEV;
+    battery_i2c_client = i2c_new_device(adapter, &portabook_ext_info);
+    if (!battery_i2c_client) {
+	i2c_del_driver(&portabook_battery_driver);
+	return -ENODEV;
+    }
+    i2c_put_adapter(adapter);
+    return 0;
+}
+
+void
+portabook_battery_cleanup(void)
+{
+    if (battery_i2c_client)
+	i2c_unregister_device(battery_i2c_client);
+    battery_i2c_client = NULL;
+    i2c_del_driver(&portabook_battery_driver);
+}
