@@ -61,6 +61,7 @@ portabook_set_backlight(u32 level)
 }
 
 /* interface for backlight */
+static int backlight_disabled;
 static struct backlight_device *portabook_backlight_device;
 static int
 portabook_backlight_update_status(struct backlight_device *dev)
@@ -69,10 +70,13 @@ portabook_backlight_update_status(struct backlight_device *dev)
 	(dev->props.state & (BL_CORE_SUSPENDED | BL_CORE_FBBLANK))) {
 	portabook_set_backlight(0);
 	portabook_disable_backlight();
+	backlight_disabled = 1;
     }
     else {
-	portabook_enable_backlight();
+	if (backlight_disabled)
+	    portabook_enable_backlight();
 	portabook_set_backlight(dev->props.brightness);
+	backlight_disabled = 0;
     }
     return 1;
 }
@@ -97,6 +101,10 @@ portabook_backlight_device_register(struct device *parent)
     props.max_brightness = 255;
     props.brightness = portabook_get_backlight();
     props.power = FB_BLANK_UNBLANK;
+    
+    portabook_enable_backlight();
+    backlight_disabled = 0;
+    portabook_set_backlight(props.brightness);
 
     portabook_backlight_device =
 	backlight_device_register("portabook_bl",
