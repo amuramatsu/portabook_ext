@@ -126,9 +126,10 @@ struct portabook_battery {
     int state;
 };
 
-static unsigned int cache_time = 1000;
-module_param(cache_time, uint, 0644);
-MODULE_PARM_DESC(cache_time, "cache time in milliseconds");
+static unsigned int battery_info_cache_time = 1000;
+module_param(battery_info_cache_time, uint, 0644);
+MODULE_PARM_DESC(battery_info_cache_time,
+		 "battery information caching time in milliseconds");
 
 static int
 read_battinfo_reg(struct i2c_client *i2c_client, int reg, u8 *value)
@@ -155,7 +156,8 @@ portabook_battery_read_status(struct portabook_battery *di)
 
     mutex_lock(&di->lock);
     if (di->update_time &&
-	time_before(jiffies, di->update_time + msecs_to_jiffies(cache_time)))
+	time_before(jiffies, di->update_time +
+		             msecs_to_jiffies(battery_info_cache_time)))
 	goto success;
 
     s = read_battinfo_reg(i2c_client, BATT_INFO_LAST_CAP_H, &buf[0]);
