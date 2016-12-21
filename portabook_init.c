@@ -24,10 +24,14 @@ MODULE_DESCRIPTION("Portabook extra Module");
 MODULE_AUTHOR("MURAMATSU Atsushi <amura@tomato.sakura.ne.jp>");
 MODULE_LICENSE("GPL");
 
+#ifdef CONFIG_PORTABOOK_EXT_BACKLIGHT
 extern int portabook_backlight_init(void);
 extern void portabook_backlight_cleanup(void);
+#endif
+#ifdef CONFIG_PORTABOOK_EXT_BATTERY
 extern int portabook_battery_init(void);
 extern void portabook_battery_cleanup(void);
+#endif
 
 static int
 portabook_ext_init_module(void)
@@ -35,19 +39,27 @@ portabook_ext_init_module(void)
     int error = 0;
 
     printk("portabook_ext is loaded!\n");
-    error = portabook_battery_init();
-    if (error)
-	return error;
+#ifdef CONFIG_PORTABOOK_EXT_BACKLIGHT
     error = portabook_backlight_init();
     if (error)
 	return error;
+#endif
+#ifdef CONFIG_PORTABOOK_EXT_BATTERY
+    error = portabook_battery_init();
+    if (error)
+	return error;
+#endif
     return 0;
 }
 
 static void portabook_ext_cleanup_module(void)
 {
+#ifdef CONFIG_PORTABOOK_EXT_BATTERY
     portabook_battery_cleanup();
+#endif
+#ifdef CONFIG_PORTABOOK_EXT_BACKLIGHT
     portabook_backlight_cleanup();
+#endif
     printk("portabook_ext is unloaded!\n");
 }
 
