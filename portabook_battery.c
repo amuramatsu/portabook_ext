@@ -90,7 +90,6 @@
 #define DESIGN_CAPACITY			4800	/* 4800 mAh */
 #define DESIGN_VOLTAGE			3800	/* 3.8V */
 #define DESIGN_WARN_CAPACITY		800	/* 800 mAh */
-#define SMALL_DISCHARGE_RATE		200	/* 200mA is minumum? */
 
 #define BATT_INDEX_CMD			0x82
 #define BATT_DATA_CMD			0x80
@@ -132,6 +131,16 @@ static unsigned int battery_info_cache_time = 1000;
 module_param(battery_info_cache_time, uint, 0644);
 MODULE_PARM_DESC(battery_info_cache_time,
 		 "battery information caching time in milliseconds");
+
+static unsigned int battery_fullcharged_percentage = 95;
+module_param(battery_fullcharged_percentage, uint, 0644);
+MODULE_PARM_DESC(battery_fullcharged_percentage,
+		 "percentage of capacit to be considered as full charged");
+
+static unsigned int battery_ignore_discharge_rate = 200;
+module_param(battery_ignore_discharge_rate, uint, 0644);
+MODULE_PARM_DESC(battery_ignore_discharge_rate,
+		 "smaller discharge rate in mA than this value is ignored");
 
 static int
 read_battinfo_reg(struct i2c_client *i2c_client, int reg, u8 *value)
@@ -215,7 +224,7 @@ portabook_battery_is_charged(struct portabook_battery *battery)
     if (battery->state & ACPI_BATTERY_STATE_CHARGING)
 	return 0;
     if (battery->state & ACPI_BATTERY_STATE_DISCHARGING &&
-	battery->rate_now >= SMALL_DISCHARGE_RATE)
+	battery->rate_now >= battery_ignore_discharge_rate)
 	return 0;
 
     /* battery not reporting charge */
@@ -224,7 +233,8 @@ portabook_battery_is_charged(struct portabook_battery *battery)
 	return 0;
     
     /* good batteries update full_charge as the batteries degrade */
-    if (battery->full_charge_capacity*95 <= battery->capacity_now*100)
+    if (battery->full_charge_capacity*battery_fullcharged_percentage
+	<= battery->capacity_now*100)
 	return 1;
     
     /* fallback to using design values for broken batteries */
@@ -248,7 +258,7 @@ portabook_battery_get_property(struct power_supply *psy,
     switch (psp) {
     case POWER_SUPPLY_PROP_STATUS:
 	if (battery->state & ACPI_BATTERY_STATE_DISCHARGING &&
-	    battery->rate_now >= SMALL_DISCHARGE_RATE)
+	    battery->rate_now >= battery_ignore_discharge_rate)
 	    val->intval = POWER_SUPPLY_STATUS_DISCHARGING;
 	else if (battery->state & ACPI_BATTERY_STATE_CHARGING)
 	    val->intval = POWER_SUPPLY_STATUS_CHARGING;
