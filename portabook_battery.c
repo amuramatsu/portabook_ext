@@ -74,6 +74,8 @@
 
 #define I2C_DEVICE_NAME	"portabook_batt"
 
+#define I2C_ADAPTER_NAME "Synopsys DesignWare I2C adapter"
+
 #ifndef ACPI_BATTERY_STATE_DISCHARGING
 #define ACPI_BATTERY_STATE_DISCHARGING	(1 << 0)
 #endif
@@ -460,21 +462,32 @@ int
 portabook_battery_init(void)
 {
     int s;
+    int index;
     struct i2c_adapter *adapter;
     
     s = i2c_add_driver(&portabook_battery_driver);
     if (s < 0) return s;
 
-    adapter = i2c_get_adapter(0);
-    if (!adapter)
-	return -ENODEV;
-    battery_i2c_client = i2c_new_device(adapter, &portabook_ext_info);
-    if (!battery_i2c_client) {
-	i2c_del_driver(&portabook_battery_driver);
-	return -ENODEV;
+    index = 0;
+    while (1) {
+	adapter = i2c_get_adapter(index);
+	if (!adapter)
+	    goto detect_failed;
+	/* USE first founded adater */
+	if (!strcmp(adapter->name, I2C_ADAPTER_NAME))
+	    break;
+	i2c_put_adapter(adapter);
+	index++;
     }
+    battery_i2c_client = i2c_new_device(adapter, &portabook_ext_info);
+    if (!battery_i2c_client)
+	goto detect_failed;
     i2c_put_adapter(adapter);
     return 0;
+
+detect_failed:
+    i2c_del_driver(&portabook_battery_driver);
+    return -ENODEV;
 }
 
 void
